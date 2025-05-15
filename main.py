@@ -1,7 +1,7 @@
 from controller import start_sfm_process
 import tkinter as tk
 from tkinter import ttk
-
+#adel all
 # Main window
 root = tk.Tk()
 root.title("Stereo Processing UI")

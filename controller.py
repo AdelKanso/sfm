@@ -39,21 +39,21 @@ def init():
         K = downscale_k(K)
     
     return K, image_list
-
+#adel
 def downscale_k(K):
     K[0, 0] /= reduce_res_fac
     K[1, 1] /= reduce_res_fac
     K[0, 2] /= reduce_res_fac
     K[1, 2] /= reduce_res_fac
     return K
-
+#adel
 def downscale_image(image):
     # Downscale image using pyramid down-scaling to reduce resolution
     if is_down_scale_images:
         for _ in range(1, int(reduce_res_fac / 2) + 1):
             image = cv2.pyrDown(image)
     return image
-
+#adel and mariam from yohan projecct
 def calibrate_camera(show_corners):
     objp = np.zeros((pattern_size[1] * pattern_size[0], 3), np.float32)
     objp[:, :2] = np.mgrid[0:pattern_size[0], 0:pattern_size[1]].T.reshape(-1, 2)
@@ -91,7 +91,7 @@ def calibrate_camera(show_corners):
     
     return K,image_list
 
-
+#mariam
 def features_matching(first_img, second_img,show_matches,K) -> tuple:
     # Initialize SIFT feature detector
     sift = cv2.xfeatures2d.SIFT_create()
@@ -126,11 +126,12 @@ def features_matching(first_img, second_img,show_matches,K) -> tuple:
     # Return coordinates of matched keypoints
     # Select only inlier founded_matches
     return pts0[mask.ravel() == 1],pts1[mask.ravel() == 1],E
-
+#adel
 def triangulation(first_2d, second_2d, first_proj_matrix, second_proj_matrix) -> tuple:
     pt_cloud = cv2.triangulatePoints(first_2d, second_2d, first_proj_matrix.T, second_proj_matrix.T)
     return first_proj_matrix.T, second_proj_matrix.T, (pt_cloud / pt_cloud[3])  # Normalize by the homogeneous coordinate
 
+#adel
 def pnp_rasnac(obj_point, image_point, K, dist_coeff, rot_vector, initial) -> tuple:
     if initial == 1:
         obj_point = obj_point[:, 0, :]
@@ -150,7 +151,7 @@ def pnp_rasnac(obj_point, image_point, K, dist_coeff, rot_vector, initial) -> tu
         rot_vector = rot_vector[inlier[:, 0]]
     
     return rot_m, tran_vector, image_point, obj_point, rot_vector
-
+#mariam
 def reprojection_error(obj_points, image_points, transf_mat, K, homogenity) -> tuple:
     rot_m = transf_mat[:3, :3]
     tran_vector = transf_mat[:3, 3]
@@ -168,6 +169,7 @@ def reprojection_error(obj_points, image_points, transf_mat, K, homogenity) -> t
     total_error = cv2.norm(image_points_calc, np.float32(image_points.T) if homogenity == 1 else np.float32(image_points), cv2.NORM_L2)
     return total_error / len(image_points_calc), obj_points
 
+#mariam and adel
 def opt_reprojection_error(obj_points) -> np.array:
     transf_mat = obj_points[0:12].reshape((3, 4))
     K = obj_points[12:21].reshape((3, 3))
@@ -184,7 +186,7 @@ def opt_reprojection_error(obj_points) -> np.array:
     image_points = image_points[:, 0, :]
     error = [(p[idx] - image_points[idx])**2 for idx in range(len(p))]
     return np.array(error).ravel() / len(p)
-
+#mariam and adel
 def bundle_adjustment(_3d_point, opt, transform_matrix_new, K, r_error) -> tuple:
     opt_variables = np.hstack((transform_matrix_new.ravel(), K.ravel()))
     opt_variables = np.hstack((opt_variables, opt.ravel()))
@@ -195,7 +197,7 @@ def bundle_adjustment(_3d_point, opt, transform_matrix_new, K, r_error) -> tuple
     K = values_corrected[12:21].reshape((3, 3))
     rest = int(len(values_corrected[21:]) * 0.4)
     return values_corrected[21 + rest:].reshape((int(len(values_corrected[21 + rest:]) / 3), 3)), values_corrected[21:21 + rest].reshape((2, int(rest / 2))).T, values_corrected[0:12].reshape((3, 4))
-
+#mariam
 def com_points(first_points, second_points, third_points,is_pre_calibrated=True) -> tuple:
     # Find common points between the first and second sets by matching coordinates
     first_cm_points = []
@@ -224,7 +226,7 @@ def com_points(first_points, second_points, third_points,is_pre_calibrated=True)
 
     return np.array(first_cm_points), np.array(second_cm_points), first_mask_array, second_mask_array
 
-
+#mariam
 def show_results(errors,camera_poses,total_points,total_colors):
     plt.title("Reprojection Errors")
     for i in range(len(errors)):
@@ -239,9 +241,10 @@ def show_results(errors,camera_poses,total_points,total_colors):
     # Show Colorized and save
     sparse_save(total_points, total_colors,with_colors=True)
     
+#adel
 def get_ui_values(ba_var,data_var,matches_var,corner_var):
     return ba_var.get() == "Yes", data_var.get() == "Calibrate", matches_var.get() == "Yes",corner_var.get() == "Yes"
-
+#adel and mariam
 def start_sfm_process(ba_var,data_var,matches_var,corner_var):
     enable_bundle_adjustment,is_calibrate,show_matches,show_corners = get_ui_values(ba_var,data_var,matches_var,corner_var)
     if is_calibrate:

@@ -2,6 +2,9 @@ import open3d as o3d
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
+
+
+#mariam all
 def traj_plot(camera_poses, scale=0.2):
     # Generate and visualize a 3D trajectory of camera coordinate frames
     frames = []
