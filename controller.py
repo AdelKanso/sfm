@@ -244,75 +244,115 @@ def show_results(errors,camera_poses,total_points,total_colors):
 #adel
 def get_ui_values(ba_var,data_var,matches_var,corner_var):
     return ba_var.get() == "Yes", data_var.get() == "Calibrate", matches_var.get() == "Yes",corner_var.get() == "Yes"
-#adel and mariam
-def start_sfm_process(ba_var,data_var,matches_var,corner_var):
-    enable_bundle_adjustment,is_calibrate,show_matches,show_corners = get_ui_values(ba_var,data_var,matches_var,corner_var)
-    if is_calibrate:
-        K,image_list= calibrate_camera(show_corners)
-    else:
-        K,image_list =init()
+
+#adel
+def select_image_pair(image_list, K, show_matches):
+    """ Selects an image pair with sufficient baseline using SIFT matches. """
+    min_parallax_threshold = 40  # Chosen after testing on data sets
     
+    for i in range(len(image_list) - 1):
+        img1 = downscale_image(cv2.imread(image_list[i]))
+        img2 = downscale_image(cv2.imread(image_list[i + 1]))
+
+        # Feature matching
+        keypoints1, keypoints2, E = features_matching(img1, img2, show_matches, K)
+
+        # Compute disparity (parallax)
+        parallax = np.mean(np.linalg.norm(keypoints1 - keypoints2, axis=1))
+
+        if parallax > min_parallax_threshold:
+            print(f"Selected Image Pair: {i}, {i + 1} with parallax {parallax:.2f}")
+            return img1, img2, keypoints1, keypoints2,E
+
+    raise RuntimeError("No suitable image pair found with sufficient baseline.")
+
+#adel and mariam
+def start_sfm_process(ba_var, data_var, matches_var, corner_var):
+    enable_bundle_adjustment, is_calibrate, show_matches, show_corners = get_ui_values(ba_var, data_var, matches_var, corner_var)
+    
+    if is_calibrate:
+        K, image_list = calibrate_camera(show_corners)
+    else:
+        K, image_list = init()
+
     print(f"\nCamera Matrix (K):\n{K}")
     cv2.namedWindow('image', cv2.WINDOW_NORMAL)
 
-    ##---Initial Reconstruction: Recover camera poses and triangulate initial 3D points.
-    # Flatten the camera intrinsic matrix K into a 1D array
-    pose_array = K.ravel()
-
-    #identity matrix
-    first_transform_mat = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]])
-
-    first_pose = np.matmul(K, first_transform_mat)
-    second_pose = np.empty((3, 4)) 
+    # First camera pose: identity
+    first_transform_mat = np.hstack((np.eye(3), np.zeros((3, 1))))
+    first_pose = K @ first_transform_mat
 
     total_points = np.zeros((1, 3))
     total_colors = np.zeros((1, 3))
+    #Adel
+    #after Zaar code review
+    _, second_image, first_feature, second_feature,E = select_image_pair(image_list, K, show_matches)
 
-    first_image = downscale_image(cv2.imread(image_list[0]))
-    second_image = downscale_image(cv2.imread(image_list[1]))
 
-    # Feature detection (using SIFT)
-    first_feature, second_feature,E = features_matching(first_image, second_image,show_matches,K)
     print(f"\nFundamental Matrix with RANSAC:\n{E}")
-    # Recover camera poses using the essential matrix
-    _, rot_matrix, tran_matrix, em_mask = cv2.recoverPose(E, first_feature, second_feature, K)
+
+    #Adel
+    #Fixes after Zaar code review
+    # Normalize matched points
+    first_norm = cv2.undistortPoints(np.expand_dims(first_feature, axis=1), K, None)
+    second_norm = cv2.undistortPoints(np.expand_dims(second_feature, axis=1), K, None)
+
+    # Decompose E into possible rotations and translations
+    R1, R2, t = cv2.decomposeEssentialMat(E)
+    poses = [(R1, t), (R1, -t), (R2, t), (R2, -t)]
+
+    best_pose = None
+    max_positive = 0
+    P0 = np.hstack((np.eye(3), np.zeros((3, 1))))
+
+    for R, t in poses:
+        P1 = np.hstack((R, t))
+        pts_4d = cv2.triangulatePoints(K @ P0, K @ P1, first_norm, second_norm)
+        pts_3d = pts_4d[:3] / pts_4d[3]
+
+        z_cam0 = pts_3d[2]
+        z_cam1 = (R[2] @ pts_3d) + t[2]
+        num_positive = np.sum((z_cam0 > 0) & (z_cam1 > 0))
+
+        if num_positive > max_positive:
+            max_positive = num_positive
+            best_pose = (R, t)
+
+    if best_pose is None:
+        raise RuntimeError("Could not determine correct pose.")
+
+    rot_matrix, tran_matrix = best_pose
     print(f"\nRotation:\n{rot_matrix}")
     print(f"\nTranslation Matrix:\n{tran_matrix}")
-    # Filter feature points again based on the inlier mask after pose recovery
-    first_feature = first_feature[em_mask.ravel() > 0]
-    second_feature = second_feature[em_mask.ravel() > 0]
 
-    second_transform_mat = np.empty((3, 4))
-    # Update the rotation part of the second camera's transformation matrix
-    second_transform_mat[:3, :3] = np.matmul(rot_matrix, first_transform_mat[:3, :3])
-    # Update the translation part of the second camera's transformation matrix
-    second_transform_mat[:3, 3] = first_transform_mat[:3, 3] + np.matmul(first_transform_mat[:3, :3], tran_matrix.ravel())
+    second_transform_mat = np.hstack((rot_matrix, tran_matrix))
+    second_pose = K @ second_transform_mat
 
-    # Compute the second camera's pose by multiplying the intrinsic matrix K with the transformation matrix
-    second_pose = np.matmul(K, second_transform_mat)
-
-    # Triangulate 3D points from the two views (first_pose and second_pose)
+    # Triangulate 3D points
     first_feature, second_feature, points_3d = triangulation(first_pose, second_pose, first_feature, second_feature)
 
-    # Compute reprojection error for the triangulated points
-    error, points_3d = reprojection_error(points_3d, second_feature, second_transform_mat, K, homogenity = 1)
+    # Reprojection error
+    error, points_3d = reprojection_error(points_3d, second_feature, second_transform_mat, K, homogenity=1)
+    print("First reprojection error:", error)
 
-    print("first rp error: ", error)
-    ##---
-    ##---Incremental Expansion: Add new cameras via PnP, triangulate points, and refine via bundle adjustment.
+    # PnP for initial pose refinement
+    _, _, second_feature, points_3d, _ = pnp_rasnac(
+        points_3d,
+        second_feature,
+        K,
+        np.zeros((5, 1), dtype=np.float32),
+        first_feature,
+        initial=1
+    )
 
-    #Initial pose estimation using PnP algorithm and first set of features
-    _, _, second_feature, points_3d, _ = pnp_rasnac(points_3d, second_feature, K, np.zeros((5, 1), dtype=np.float32), first_feature, initial=1)
-
-    # Prepare for further iterations: Initialize pose array and set total images to process
-    total_images = len(image_list) - 2 
-    pose_array = np.hstack((np.hstack((pose_array, first_pose.ravel())), second_pose.ravel()))
-
-    # Set a threshold for bundle adjustment (error tolerance)
+    # Bundle adjustment preparation
+    total_images = len(image_list) - 2
+    pose_array = np.hstack((K.ravel(), first_pose.ravel(), second_pose.ravel()))
     threshold = 0.5
 
-    errors=[]
+    errors = []
     camera_poses = []
+
     # Loop through each subsequent image for incremental camera expansion
     for i in tqdm(range(total_images)):
         # Load and downscale current image for processing
