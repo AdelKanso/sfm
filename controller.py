@@ -26,19 +26,26 @@ def get_images(path,extension):
             image_list.append(path + '/' + image)
     return image_list
 
+
+# New
 def init():
-    # Load camera intrinsic matrix from file (K.txt)
+    """
+    Initializes the SfM pipeline by loading pre-calibrated camera parameters.
+    """
+    # Load camera intrinsic matrix
     with open(calibrated_path + '/K.txt') as file:
-        K = np.array(list((map(lambda x: list(map(lambda x: float(x), x.strip().split(' '))), file.read().split('\n')))))
-    
-    image_list = get_images(calibrated_path,'.jpg')
-    
+        K = np.array(
+            list((map(lambda x: list(map(lambda x: float(x), x.strip().split(' '))), file.read().split('\n')))))
+
+    dist_coeff = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+
+    image_list = get_images(calibrated_path, '.jpg')
 
     if is_down_scale_images:
-        # Downscale intrinsic matrix for image resizing
         K = downscale_k(K)
-    
-    return K, image_list
+
+    return K, dist_coeff, image_list
+
 #adel
 def downscale_k(K):
     K[0, 0] /= reduce_res_fac
@@ -53,6 +60,16 @@ def downscale_image(image):
         for _ in range(1, int(reduce_res_fac / 2) + 1):
             image = cv2.pyrDown(image)
     return image
+
+
+# New function for undistorting images
+# def undistort_image(image, K, dist_coeff):
+
+#     h, w = image.shape[:2]
+#     new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(K, dist_coeff, (w, h), 1, (w, h))
+#     undistorted = cv2.undistort(image, K, dist_coeff, None, new_camera_matrix)
+#     return undistorted
+
 #adel and mariam from yohan projecct
 def calibrate_camera(show_corners):
     objp = np.zeros((pattern_size[1] * pattern_size[0], 3), np.float32)
@@ -81,15 +98,19 @@ def calibrate_camera(show_corners):
                 cv2.drawChessboardCorners(img, pattern_size, corners, ret)
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 show_plot(img_rgb,f" Corners (Image {i+1})")
-    _, K, _, _, _ = cv2.calibrateCamera(objpoints, imgpoints, (w, h), None, None)
-    
+
+
+    # New , modified to return distortion coefficients
+    ret, K, dist_coeff, _, _ = cv2.calibrateCamera(objpoints, imgpoints, (w, h), None, None)
+
     if is_down_scale_images:
         K = downscale_k(K)
     
     # Load image files into the image list
     image_list = get_images(un_calibrated_path,'.png')
-    
-    return K,image_list
+
+    # New
+    return K, dist_coeff, image_list
 
 #mariam
 def features_matching(first_img, second_img,show_matches,K) -> tuple:
@@ -126,21 +147,26 @@ def features_matching(first_img, second_img,show_matches,K) -> tuple:
     # Return coordinates of matched keypoints
     # Select only inlier founded_matches
     return pts0[mask.ravel() == 1],pts1[mask.ravel() == 1],E
+
 #adel
 def triangulation(first_2d, second_2d, first_proj_matrix, second_proj_matrix) -> tuple:
     pt_cloud = cv2.triangulatePoints(first_2d, second_2d, first_proj_matrix.T, second_proj_matrix.T)
     return first_proj_matrix.T, second_proj_matrix.T, (pt_cloud / pt_cloud[3])  # Normalize by the homogeneous coordinate
 
 #adel
+# def pnp_rasnac(obj_point, image_point, K, dist_coeff, rot_vector, initial) -> tuple:
 def pnp_rasnac(obj_point, image_point, K, dist_coeff, rot_vector, initial) -> tuple:
     if initial == 1:
         obj_point = obj_point[:, 0, :]
         image_point = image_point.T
-        rot_vector = rot_vector.T 
-    
+        rot_vector = rot_vector.T
+
     # Solve PnP using RANSAC to estimate rotation and translation
+
+    # New
+    # Modified to use dist_coeff
     _, rot_vector_calc, tran_vector, inlier = cv2.solvePnPRansac(obj_point, image_point, K, dist_coeff, cv2.SOLVEPNP_ITERATIVE)
-    
+
     # Convert rotation vector to rotation matrix
     rot_m, _ = cv2.Rodrigues(rot_vector_calc)
 
@@ -152,7 +178,8 @@ def pnp_rasnac(obj_point, image_point, K, dist_coeff, rot_vector, initial) -> tu
     
     return rot_m, tran_vector, image_point, obj_point, rot_vector
 #mariam
-def reprojection_error(obj_points, image_points, transf_mat, K, homogenity) -> tuple:
+# def reprojection_error(obj_points, image_points, transf_mat, K, homogenity) -> tuple:
+def reprojection_error(obj_points, image_points, transf_mat, K, dist_coeff, homogenity) -> tuple:
     rot_m = transf_mat[:3, :3]
     tran_vector = transf_mat[:3, 3]
     rot_vector, _ = cv2.Rodrigues(rot_m)
@@ -162,9 +189,11 @@ def reprojection_error(obj_points, image_points, transf_mat, K, homogenity) -> t
         obj_points = cv2.convertPointsFromHomogeneous(obj_points.T)
     
     # Project object points onto image plane
-    image_points_calc, _ = cv2.projectPoints(obj_points, rot_vector, tran_vector, K, None)
+    # New
+    # Modified to include dist_coeff
+    image_points_calc, _ = cv2.projectPoints(obj_points, rot_vector, tran_vector, K, dist_coeff)
     image_points_calc = np.float32(image_points_calc[:, 0, :])
-    
+
     # Calculate the reprojection error
     total_error = cv2.norm(image_points_calc, np.float32(image_points.T) if homogenity == 1 else np.float32(image_points), cv2.NORM_L2)
     return total_error / len(image_points_calc), obj_points
@@ -173,6 +202,10 @@ def reprojection_error(obj_points, image_points, transf_mat, K, homogenity) -> t
 def opt_reprojection_error(obj_points) -> np.array:
     transf_mat = obj_points[0:12].reshape((3, 4))
     K = obj_points[12:21].reshape((3, 3))
+
+    # New
+    dist_coeff = obj_points[21:26]  # k1, k2, p1, p2, k3
+
     rest = int(len(obj_points[21:]) * 0.4)
     p = obj_points[21:21 + rest].reshape((2, int(rest/2))).T
     obj_points = obj_points[21 + rest:].reshape((int(len(obj_points[21 + rest:]) / 3), 3))
@@ -182,21 +215,29 @@ def opt_reprojection_error(obj_points) -> np.array:
     rot_vector, _ = cv2.Rodrigues(rot_m)
     
     # Project object points and calculate the error
-    image_points, _ = cv2.projectPoints(obj_points, rot_vector, tran_vector, K, None)
+    # New
+    image_points, _ = cv2.projectPoints(obj_points, rot_vector, tran_vector, K, dist_coeff)
+
     image_points = image_points[:, 0, :]
     error = [(p[idx] - image_points[idx])**2 for idx in range(len(p))]
     return np.array(error).ravel() / len(p)
+
+
 #mariam and adel
-def bundle_adjustment(_3d_point, opt, transform_matrix_new, K, r_error) -> tuple:
-    opt_variables = np.hstack((transform_matrix_new.ravel(), K.ravel()))
+# New
+def bundle_adjustment(_3d_point, opt, transform_matrix_new, K, dist_coeff, r_error) -> tuple:
+
+    opt_variables = np.hstack((transform_matrix_new.ravel(), K.ravel(), dist_coeff.ravel()))
     opt_variables = np.hstack((opt_variables, opt.ravel()))
     opt_variables = np.hstack((opt_variables, _3d_point.ravel()))
 
-    # Perform least squares optimization to minimize reprojection error
     values_corrected = least_squares(opt_reprojection_error, opt_variables, gtol=r_error).x
     K = values_corrected[12:21].reshape((3, 3))
-    rest = int(len(values_corrected[21:]) * 0.4)
-    return values_corrected[21 + rest:].reshape((int(len(values_corrected[21 + rest:]) / 3), 3)), values_corrected[21:21 + rest].reshape((2, int(rest / 2))).T, values_corrected[0:12].reshape((3, 4))
+    dist_coeff = values_corrected[21:26]
+    rest = int(len(values_corrected[26:]) * 0.4)
+    return values_corrected[26 + rest:].reshape((int(len(values_corrected[26 + rest:]) / 3), 3)), values_corrected[26:26 + rest].reshape((2, int(rest / 2))).T, values_corrected[0:12].reshape((3, 4)), dist_coeff
+
+
 #mariam
 def com_points(first_points, second_points, third_points,is_pre_calibrated=True) -> tuple:
     # Find common points between the first and second sets by matching coordinates
@@ -246,14 +287,17 @@ def get_ui_values(ba_var,data_var,matches_var,corner_var):
     return ba_var.get() == "Yes", data_var.get() == "Calibrate", matches_var.get() == "Yes",corner_var.get() == "Yes"
 
 #adel
-def select_image_pair(image_list, K, show_matches):
+def select_image_pair(image_list, K, show_matches,dist_coeff):
     """ Selects an image pair with sufficient baseline using SIFT matches. """
     min_parallax_threshold = 40  # Chosen after testing on data sets
     
     for i in range(len(image_list) - 1):
-        img1 = downscale_image(cv2.imread(image_list[i]))
-        img2 = downscale_image(cv2.imread(image_list[i + 1]))
-
+        
+        img1 = downscale_image(cv2.imread(image_list[0]))
+        img2 = downscale_image(cv2.imread(image_list[1]))
+        img1 = cv2.undistort(img1, K, dist_coeff)
+        img2 = cv2.undistort(img2, K, dist_coeff)
+        
         # Feature matching
         keypoints1, keypoints2, E = features_matching(img1, img2, show_matches, K)
 
@@ -267,27 +311,34 @@ def select_image_pair(image_list, K, show_matches):
     raise RuntimeError("No suitable image pair found with sufficient baseline.")
 
 #adel and mariam
-def start_sfm_process(ba_var, data_var, matches_var, corner_var):
-    enable_bundle_adjustment, is_calibrate, show_matches, show_corners = get_ui_values(ba_var, data_var, matches_var, corner_var)
-    
+
+#adel and mariam
+def start_sfm_process(ba_var,data_var,matches_var,corner_var):
+    enable_bundle_adjustment,is_calibrate,show_matches,show_corners = get_ui_values(ba_var,data_var,matches_var,corner_var)
+
+    # New
+    # Modified to include dist_coeff
     if is_calibrate:
-        K, image_list = calibrate_camera(show_corners)
+        K, dist_coeff, image_list = calibrate_camera(show_corners)
     else:
-        K, image_list = init()
+        K, dist_coeff, image_list = init()
 
     print(f"\nCamera Matrix (K):\n{K}")
+    print(f"\nDistortion Coefficients:\n{dist_coeff}")
     cv2.namedWindow('image', cv2.WINDOW_NORMAL)
 
-    # First camera pose: identity
-    first_transform_mat = np.hstack((np.eye(3), np.zeros((3, 1))))
-    first_pose = K @ first_transform_mat
+    # Initialize for multi-view color sampling
+    point_to_views = {}  # Maps 3D point index to list of (image_index, 2D_point, color)
 
+    pose_array = K.ravel()
+    first_transform_mat = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]])
+    first_pose = np.matmul(K, first_transform_mat)
+    second_pose = np.empty((3, 4))
     total_points = np.zeros((1, 3))
     total_colors = np.zeros((1, 3))
     #Adel
     #after Zaar code review
-    _, second_image, first_feature, second_feature,E = select_image_pair(image_list, K, show_matches)
-
+    first_image, second_image, first_feature, second_feature,E = select_image_pair(image_list, K, show_matches,dist_coeff)
 
     print(f"\nFundamental Matrix with RANSAC:\n{E}")
 
@@ -332,7 +383,7 @@ def start_sfm_process(ba_var, data_var, matches_var, corner_var):
     first_feature, second_feature, points_3d = triangulation(first_pose, second_pose, first_feature, second_feature)
 
     # Reprojection error
-    error, points_3d = reprojection_error(points_3d, second_feature, second_transform_mat, K, homogenity=1)
+    error, points_3d = reprojection_error(points_3d, second_feature, second_transform_mat, K,dist_coeff, homogenity=1)
     print("First reprojection error:", error)
 
     # PnP for initial pose refinement
@@ -345,46 +396,54 @@ def start_sfm_process(ba_var, data_var, matches_var, corner_var):
         initial=1
     )
 
-    # Bundle adjustment preparation
-    total_images = len(image_list) - 2
-    pose_array = np.hstack((K.ravel(), first_pose.ravel(), second_pose.ravel()))
+
+    # New
+    # Store initial point correspondences for color sampling
+    # for i, (pt1, pt2) in enumerate(zip(first_feature, second_feature)):
+    #     pt_idx = i
+    #     point_to_views[pt_idx] = [
+    #         (0, pt1, cv2.cvtColor(first_image[int(pt1[1]), int(pt1[0])][None, None, :], cv2.COLOR_BGR2RGB)[0, 0]),
+    #         (1, pt2, cv2.cvtColor(second_image[int(pt2[1]), int(pt2[0])][None, None, :], cv2.COLOR_BGR2RGB)[0, 0])
+    #     ]
+
+    #Initial pose estimation using PnP algorithm and first set of features
+    _, _, second_feature, points_3d, _ = pnp_rasnac(points_3d, second_feature, K, np.zeros((5, 1), dtype=np.float32), first_feature, initial=1)
+
+    # Prepare for further iterations: Initialize pose array and set total images to process
+    total_images = len(image_list) - 2 
+    pose_array = np.hstack((np.hstack((pose_array, first_pose.ravel())), second_pose.ravel()))
+
+    # Set a threshold for bundle adjustment (error tolerance)
     threshold = 0.5
 
     errors = []
     camera_poses = []
+    point_counter = points_3d.shape[0]  # Track number of 3D points
 
     # Loop through each subsequent image for incremental camera expansion
     for i in tqdm(range(total_images)):
-        # Load and downscale current image for processing
+
         image_2 = downscale_image(cv2.imread(image_list[i + 2]))
+        image_2 = cv2.undistort(image_2, K, dist_coeff)
+        
+        features_cur, features_2, _ = features_matching(second_image, image_2, show_matches, K)
 
-        # Feature matching between previous and current image
-        features_cur, features_2,_ = features_matching(second_image, image_2,show_matches,K)
-
-        # If not the first iteration, perform triangulation for 3D points
         if i != 0:
             first_feature, second_feature, points_3d = triangulation(first_pose, second_pose, first_feature, second_feature)
             second_feature = second_feature.T
             points_3d = cv2.convertPointsFromHomogeneous(points_3d.T)
             points_3d = points_3d[:, 0, :]
 
-        # Find common points between current and previous images
-        cm_points_0, cm_points_1, cm_mask_0, cm_mask_1 = com_points(second_feature, features_cur, features_2,is_pre_calibrated=is_calibrate)
-        
+        cm_points_0, cm_points_1, cm_mask_0, cm_mask_1 = com_points(second_feature, features_cur, features_2, is_pre_calibrated=is_calibrate)
         cm_points_2 = features_2[cm_points_1]
         cm_points_cur = features_cur[cm_points_1]
 
-        # Estimate the pose of the new camera using PnP
-        rot_matrix, tran_matrix, cm_points_2, points_3d, cm_points_cur = pnp_rasnac(points_3d[cm_points_0], cm_points_2, K, np.zeros((5, 1), dtype=np.float32), cm_points_cur, initial=0)
-        second_transform_mat = np.hstack((rot_matrix, tran_matrix))  # Combine rotation and translation into a single matrix
-        pose_2 = np.matmul(K, second_transform_mat)  # Camera pose in world coordinates
-
-        # Calculate reprojection error for the newly estimated 3D points
-        error, points_3d = reprojection_error(points_3d, cm_points_2, second_transform_mat, K, homogenity=0)
-
-        # Perform triangulation to estimate 3D points from the new camera pose
+        rot_matrix, tran_vector, cm_points_2, points_3d, cm_points_cur = pnp_rasnac(points_3d[cm_points_0], cm_points_2, K, dist_coeff, cm_points_cur, initial=0)
+        second_transform_mat = np.hstack((rot_matrix, tran_vector))
+        pose_2 = np.matmul(K, second_transform_mat)
+        error, points_3d = reprojection_error(points_3d, cm_points_2, second_transform_mat, K, dist_coeff, homogenity=0)
         cm_mask_0, cm_mask_1, points_3d = triangulation(second_pose, pose_2, cm_mask_0, cm_mask_1)
-        error, points_3d = reprojection_error(points_3d, cm_mask_1, second_transform_mat, K, homogenity=1)
+        error, points_3d = reprojection_error(points_3d, cm_mask_1, second_transform_mat, K, dist_coeff, homogenity=1)
         print("rp error: ", error)
 
         # Add the new pose to the pose array
@@ -395,25 +454,43 @@ def start_sfm_process(ba_var, data_var, matches_var, corner_var):
         pose_4x4[:3, :4] = Rt
         camera_poses.append(pose_4x4)  # Store for visualization
 
-        # Perform bundle adjustment to refine 3D points and camera poses, if enabled
+        # Update point correspondences for new points
+        for j, pt in enumerate(cm_mask_1):
+            pt_idx = point_counter + j
+            point_to_views[pt_idx] = [(i + 2, pt, cv2.cvtColor(image_2[int(pt[1]), int(pt[0])][None, None, :], cv2.COLOR_BGR2RGB)[0, 0])]
+            # Link to existing points
+            for k, idx in enumerate(cm_points_0):
+                if j in cm_points_1:
+                    point_to_views[idx].append((i + 2, cm_points_2[k], cv2.cvtColor(image_2[int(cm_points_2[k][1]), int(cm_points_2[k][0])][None, None, :], cv2.COLOR_BGR2RGB)[0, 0]))
+
+        # New
         if enable_bundle_adjustment:
-            
-            points_3d, cm_mask_1, second_transform_mat = bundle_adjustment(points_3d, cm_mask_1, second_transform_mat, K, threshold)
-            pose_2 = np.matmul(K, second_transform_mat)  # Update the refined pose
-            error, points_3d = reprojection_error(points_3d, cm_mask_1, second_transform_mat, K, homogenity=0)
+            points_3d, cm_mask_1, second_transform_mat, dist_coeff = bundle_adjustment(points_3d, cm_mask_1, second_transform_mat, K, dist_coeff, threshold)
+            pose_2 = np.matmul(K, second_transform_mat)
+            error, points_3d = reprojection_error(points_3d, cm_mask_1, second_transform_mat, K, dist_coeff, homogenity=0)
             print("Bundle error: ", error)
 
-            # Accumulate the refined 3D points and their colors
             total_points = np.vstack((total_points, points_3d))
             points_left = np.array(cm_mask_1, dtype=np.int32)
-            color_vector = np.array([image_2[l[1], l[0]] for l in points_left])  # Store color data for points
+            # Average colors from all views
+            color_vector = np.zeros((len(points_left), 3))
+            for j, pt in enumerate(points_left):
+                pt_idx = point_counter + j
+                colors = [view[2] for view in point_to_views[pt_idx]]
+                color_vector[j] = np.mean(colors, axis=0)
             total_colors = np.vstack((total_colors, color_vector))
+            point_counter += len(points_3d)
         else:
-            # Without bundle adjustment, just accumulate the points
             total_points = np.vstack((total_points, points_3d[:, 0, :]))
             points_left = np.array(cm_mask_1, dtype=np.int32)
-            color_vector = np.array([image_2[l[1], l[0]] for l in points_left.T])  # Store color data
+            # Average colors from all views
+            color_vector = np.zeros((len(points_left), 3))
+            for j, pt in enumerate(points_left):
+                pt_idx = point_counter + j
+                colors = [view[2] for view in point_to_views[pt_idx]]
+                color_vector[j] = np.mean(colors, axis=0)
             total_colors = np.vstack((total_colors, color_vector))
+            point_counter += len(points_3d[:, 0, :])
 
         # Prepare for the next iteration: update pose and feature points
         first_transform_mat = np.copy(second_transform_mat)
