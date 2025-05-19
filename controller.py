@@ -290,6 +290,16 @@ def start_sfm_process(ba_var,data_var,matches_var,corner_var):
 
     # Compute the second camera's pose by multiplying the intrinsic matrix K with the transformation matrix
     second_pose = np.matmul(K, second_transform_mat)
+    
+    pose_4x4_first = np.eye(4)
+    pose_4x4_first[:3, :4] = first_transform_mat
+    pose_4x4_second = np.eye(4)
+    pose_4x4_second[:3, :4] = second_transform_mat
+
+    camera_poses = []
+
+    camera_poses.append(pose_4x4_first)
+    camera_poses.append(pose_4x4_second)
 
     # Triangulate 3D points from the two views (first_pose and second_pose)
     first_feature, second_feature, points_3d = triangulation(first_pose, second_pose, first_feature, second_feature)
@@ -312,14 +322,17 @@ def start_sfm_process(ba_var,data_var,matches_var,corner_var):
     threshold = 0.5
 
     errors=[]
-    camera_poses = []
+    all_points_3d = [points_3d]  # Store all triangulated 3D points
+    all_image_features = [first_feature, second_feature] # Store corresponding image features
+
     # Loop through each subsequent image for incremental camera expansion
     for i in tqdm(range(total_images)):
         # Load and downscale current image for processing
-        image_2 = downscale_image(cv2.imread(image_list[i + 2]))
+        current_image = downscale_image(cv2.imread(image_list[i + 2]))
 
         # Feature matching between previous and current image
-        features_cur, features_2,_ = features_matching(second_image, image_2,show_matches,K)
+        features_prev, features_curr, _ = features_matching(second_image, current_image, show_matches, K)
+        all_image_features.append(features_curr)
 
         # If not the first iteration, perform triangulation for 3D points
         if i != 0:
@@ -327,12 +340,13 @@ def start_sfm_process(ba_var,data_var,matches_var,corner_var):
             second_feature = second_feature.T
             points_3d = cv2.convertPointsFromHomogeneous(points_3d.T)
             points_3d = points_3d[:, 0, :]
+            all_points_3d.append(points_3d)
 
         # Find common points between current and previous images
-        cm_points_0, cm_points_1, cm_mask_0, cm_mask_1 = com_points(second_feature, features_cur, features_2,is_pre_calibrated=is_calibrate)
-        
-        cm_points_2 = features_2[cm_points_1]
-        cm_points_cur = features_cur[cm_points_1]
+        cm_points_0, cm_points_1, cm_mask_0, cm_mask_1 = com_points(second_feature, features_prev, features_curr, is_pre_calibrated=is_calibrate)
+
+        cm_points_2 = features_curr[cm_points_1]
+        cm_points_cur = features_prev[cm_points_1]
 
         # Estimate the pose of the new camera using PnP
         rot_matrix, tran_matrix, cm_points_2, points_3d, cm_points_cur = pnp_rasnac(points_3d[cm_points_0], cm_points_2, K, np.zeros((5, 1), dtype=np.float32), cm_points_cur, initial=0)
@@ -346,6 +360,7 @@ def start_sfm_process(ba_var,data_var,matches_var,corner_var):
         cm_mask_0, cm_mask_1, points_3d = triangulation(second_pose, pose_2, cm_mask_0, cm_mask_1)
         error, points_3d = reprojection_error(points_3d, cm_mask_1, second_transform_mat, K, homogenity=1)
         print("rp error: ", error)
+        all_points_3d.append(points_3d)
 
         # Add the new pose to the pose array
         pose_array = np.hstack((pose_array, pose_2.ravel()))
@@ -355,25 +370,37 @@ def start_sfm_process(ba_var,data_var,matches_var,corner_var):
         pose_4x4[:3, :4] = Rt
         camera_poses.append(pose_4x4)  # Store for visualization
 
+        current_3d_points = None
+        current_colors = None
+
         # Perform bundle adjustment to refine 3D points and camera poses, if enabled
         if enable_bundle_adjustment:
-            
+
             points_3d, cm_mask_1, second_transform_mat = bundle_adjustment(points_3d, cm_mask_1, second_transform_mat, K, threshold)
             pose_2 = np.matmul(K, second_transform_mat)  # Update the refined pose
             error, points_3d = reprojection_error(points_3d, cm_mask_1, second_transform_mat, K, homogenity=0)
             print("Bundle error: ", error)
-
-            # Accumulate the refined 3D points and their colors
-            total_points = np.vstack((total_points, points_3d))
+            current_3d_points = points_3d
             points_left = np.array(cm_mask_1, dtype=np.int32)
-            color_vector = np.array([image_2[l[1], l[0]] for l in points_left])  # Store color data for points
-            total_colors = np.vstack((total_colors, color_vector))
+            color_vector = np.array([current_image[l[1], l[0]] for l in points_left])
+            color_vector = cv2.cvtColor(color_vector.reshape(-1, 1, 3), cv2.COLOR_BGR2RGB).reshape(-1, 3)
+            current_colors = color_vector
+
         else:
             # Without bundle adjustment, just accumulate the points
-            total_points = np.vstack((total_points, points_3d[:, 0, :]))
+            current_3d_points = points_3d[:, 0, :]
             points_left = np.array(cm_mask_1, dtype=np.int32)
-            color_vector = np.array([image_2[l[1], l[0]] for l in points_left.T])  # Store color data
-            total_colors = np.vstack((total_colors, color_vector))
+            color_vector = np.array([current_image[l[1], l[0]] for l in points_left.T])
+            color_vector = cv2.cvtColor(color_vector.reshape(-1, 1, 3), cv2.COLOR_BGR2RGB).reshape(-1, 3)
+            current_colors = color_vector
+
+        if current_3d_points is not None and current_colors is not None:
+            if total_points.shape[0] == 1: # Initialize
+                total_points = current_3d_points
+                total_colors = current_colors
+            else:
+                total_points = np.vstack((total_points, current_3d_points))
+                total_colors = np.vstack((total_colors, current_colors))
 
         # Prepare for the next iteration: update pose and feature points
         first_transform_mat = np.copy(second_transform_mat)
@@ -382,16 +409,16 @@ def start_sfm_process(ba_var,data_var,matches_var,corner_var):
         errors.append(error)
         # Update images and feature sets for the next iteration
         first_image = np.copy(second_image)
-        second_image = np.copy(image_2)
-        first_feature = np.copy(features_cur)
-        second_feature = np.copy(features_2)
+        second_image = np.copy(current_image)
+        first_feature = np.copy(features_prev)
+        second_feature = np.copy(features_curr)
         second_pose = np.copy(pose_2)
 
         # Display the current image and check for a break condition
-        cv2.imshow(image_list[0].split('/')[-2], image_2)
+        cv2.imshow(image_list[0].split('/')[-2], current_image)
         if cv2.waitKey(1) & 0xff == ord('q'):
             break
     # Close all OpenCV windows after processing is complete
     cv2.destroyAllWindows()
-    
-    show_results(errors,camera_poses,total_points,total_colors)
+
+    show_results(errors, camera_poses, total_points[1:], total_colors[1:]) # Exclude initial zero arrays

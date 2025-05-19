@@ -6,14 +6,30 @@ import matplotlib.pyplot as plt
 
 #mariam all
 def traj_plot(camera_poses, scale=0.2):
-    # Generate and visualize a 3D trajectory of camera coordinate frames
     frames = []
+    camera_centers = []
+
     for pose in camera_poses:
         cam_to_world = np.linalg.inv(pose)
+        
+        # Add coordinate frame at camera pose
         frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=scale)
         frame.transform(cam_to_world)
         frames.append(frame)
-    o3d.visualization.draw_geometries(frames, window_name="Camera Trajectory")
+
+        # Compute and store camera center (translation part)
+        camera_center = cam_to_world[:3, 3]
+        camera_centers.append(camera_center)
+
+    # Build trajectory as a LineSet
+    lines = [[i, i + 1] for i in range(len(camera_centers) - 1)]
+    trajectory = o3d.geometry.LineSet()
+    trajectory.points = o3d.utility.Vector3dVector(camera_centers)
+    trajectory.lines = o3d.utility.Vector2iVector(lines)
+    trajectory.colors = o3d.utility.Vector3dVector([[1, 0, 0] for _ in lines])  # Red
+
+    o3d.visualization.draw_geometries(frames + [trajectory], window_name="Camera Trajectory")
+
     
 
 def sparse_save(point_cloud, colors, with_colors=False) -> None:
