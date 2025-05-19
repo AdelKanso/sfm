@@ -421,7 +421,6 @@ def start_sfm_process(ba_var, data_var, matches_var, corner_var):
         #to show latererrors
         errors.append(error)
         # Update images and feature sets for the next iteration
-        first_image = np.copy(second_image)
         second_image = np.copy(image_2)
         first_feature = np.copy(features_cur)
         second_feature = np.copy(features_2)
