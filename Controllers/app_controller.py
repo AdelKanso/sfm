@@ -38,9 +38,10 @@ def get_ui_values(ba_var,data_var,matches_var,corner_var):
 def start_sfm_process(ba_var,data_var,matches_var,corner_var):
     enable_bundle_adjustment,is_calibrate,show_matches,show_corners = get_ui_values(ba_var,data_var,matches_var,corner_var)
     if is_calibrate:
-        K,image_list= calibrate_camera(show_corners)
+        K,image_list,dist_coeff= calibrate_camera(show_corners)
     else:
         K,image_list =init()
+        dist_coeff=None
     
     print(f"\nCamera Matrix (K):\n{K}")
     cv2.namedWindow('image', cv2.WINDOW_NORMAL)
@@ -58,8 +59,8 @@ def start_sfm_process(ba_var,data_var,matches_var,corner_var):
     print(f"\nFundamental Matrix with RANSAC:\n{E}")
     #Fixes after Zaar code review
     # Normalize matched points
-    first_norm = cv2.undistortPoints(np.expand_dims(first_feature, axis=1), K, None)
-    second_norm = cv2.undistortPoints(np.expand_dims(second_feature, axis=1), K, None)
+    first_norm = cv2.undistortPoints(np.expand_dims(first_feature, axis=1), K, dist_coeff)
+    second_norm = cv2.undistortPoints(np.expand_dims(second_feature, axis=1), K, dist_coeff)
 
     # Decompose E into possible rotations and translations
     R1, R2, t = cv2.decomposeEssentialMat(E)
@@ -106,14 +107,14 @@ def start_sfm_process(ba_var,data_var,matches_var,corner_var):
     first_feature, second_feature, points_3d = triangulation(first_pose, second_pose, first_feature, second_feature)
 
     # Compute reprojection error for the triangulated points
-    error, points_3d = reprojection_error(points_3d, second_feature, second_transform_mat, K, homogenity = 1)
+    error, points_3d = reprojection_error(points_3d, second_feature, second_transform_mat, K, homogenity = 1,dist_coeff=dist_coeff)
 
     print("first rp error: ", error)
     ##---
     ##---Incremental Expansion: Add new cameras via PnP, triangulate points, and refine via bundle adjustment.
 
     #Initial pose estimation using PnP algorithm and first set of features
-    _, _, second_feature, points_3d, _ = pnp_rasnac(points_3d, second_feature, K, np.zeros((5, 1), dtype=np.float32), first_feature, initial=1)
+    _, _, second_feature, points_3d, _ = pnp_rasnac(points_3d, second_feature, K,  dist_coeff if is_calibrate else np.zeros((5, 1), dtype=np.float32), first_feature, initial=1)
 
     # Bundle adjustment preparation
     total_images = len(image_list) - 2
@@ -148,16 +149,16 @@ def start_sfm_process(ba_var,data_var,matches_var,corner_var):
         cm_points_cur = features_prev[cm_points_1]
 
         # Estimate the pose of the new camera using PnP
-        rot_matrix, tran_matrix, cm_points_2, points_3d, cm_points_cur = pnp_rasnac(points_3d[cm_points_0], cm_points_2, K, np.zeros((5, 1), dtype=np.float32), cm_points_cur, initial=0)
+        rot_matrix, tran_matrix, cm_points_2, points_3d, cm_points_cur = pnp_rasnac(points_3d[cm_points_0], cm_points_2, K,  dist_coeff if is_calibrate else np.zeros((5, 1), dtype=np.float32), cm_points_cur, initial=0)
         second_transform_mat = np.hstack((rot_matrix, tran_matrix))  # Combine rotation and translation into a single matrix
         pose_2 = np.matmul(K, second_transform_mat)  # Camera pose in world coordinates
 
         # Calculate reprojection error for the newly estimated 3D points
-        error, points_3d = reprojection_error(points_3d, cm_points_2, second_transform_mat, K, homogenity=0)
+        error, points_3d = reprojection_error(points_3d, cm_points_2, second_transform_mat, K, homogenity=0,dist_coeff=dist_coeff)
 
         # Perform triangulation to estimate 3D points from the new camera pose
         cm_mask_0, cm_mask_1, points_3d = triangulation(second_pose, pose_2, cm_mask_0, cm_mask_1)
-        error, points_3d = reprojection_error(points_3d, cm_mask_1, second_transform_mat, K, homogenity=1)
+        error, points_3d = reprojection_error(points_3d, cm_mask_1, second_transform_mat, K, homogenity=1,dist_coeff=dist_coeff)
         print("rp error: ", error)
         all_points_3d.append(points_3d)
 
@@ -174,10 +175,9 @@ def start_sfm_process(ba_var,data_var,matches_var,corner_var):
 
         # Perform bundle adjustment to refine 3D points and camera poses, if enabled
         if enable_bundle_adjustment:
-
-            points_3d, cm_mask_1, second_transform_mat = bundle_adjustment(points_3d, cm_mask_1, second_transform_mat, K, threshold)
+            points_3d, cm_mask_1, second_transform_mat,K = bundle_adjustment(points_3d, cm_mask_1, second_transform_mat, K, threshold,dist_coeff,is_calibrate)
             pose_2 = np.matmul(K, second_transform_mat)  # Update the refined pose
-            error, points_3d = reprojection_error(points_3d, cm_mask_1, second_transform_mat, K, homogenity=0)
+            error, points_3d = reprojection_error(points_3d, cm_mask_1, second_transform_mat, K, homogenity=0,dist_coeff=dist_coeff)
             print("Bundle error: ", error)
             current_3d_points = points_3d
             points_left = np.array(cm_mask_1, dtype=np.int32)

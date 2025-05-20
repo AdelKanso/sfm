@@ -33,7 +33,7 @@ def pnp_rasnac(obj_point, image_point, K, dist_coeff, rot_vector, initial) -> tu
     return rot_m, tran_vector, image_point, obj_point, rot_vector
 
 #mariam
-def reprojection_error(obj_points, image_points, transf_mat, K, homogenity) -> tuple:
+def reprojection_error(obj_points, image_points, transf_mat, K, homogenity,dist_coeff) -> tuple:
     rot_m = transf_mat[:3, :3]
     tran_vector = transf_mat[:3, 3]
     rot_vector, _ = cv2.Rodrigues(rot_m)
@@ -43,7 +43,7 @@ def reprojection_error(obj_points, image_points, transf_mat, K, homogenity) -> t
         obj_points = cv2.convertPointsFromHomogeneous(obj_points.T)
     
     # Project object points onto image plane
-    image_points_calc, _ = cv2.projectPoints(obj_points, rot_vector, tran_vector, K, None)
+    image_points_calc, _ = cv2.projectPoints(obj_points, rot_vector, tran_vector, K, dist_coeff)
     image_points_calc = np.float32(image_points_calc[:, 0, :])
     
     # Calculate the reprojection error
