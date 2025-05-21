@@ -181,7 +181,12 @@ def start_sfm_process(ba_var,data_var,matches_var,corner_var):
             print("Bundle error: ", error)
             current_3d_points = points_3d
             points_left = np.array(cm_mask_1, dtype=np.int32)
-            color_vector = np.array([current_image[l[1], l[0]] for l in points_left])
+            height, width = current_image.shape[:2]
+            color_vector = np.array([
+                current_image[l[1], l[0]] 
+                for l in points_left 
+                if 0 <= l[0] < width and 0 <= l[1] < height
+            ])
             color_vector = cv2.cvtColor(color_vector.reshape(-1, 1, 3), cv2.COLOR_BGR2RGB).reshape(-1, 3)
             current_colors = color_vector
 
