@@ -42,95 +42,103 @@ The codebase is organized into modular Python files, each handling a specific pa
 The dataset comprises several scenes designed to evaluate the performance of Structure-from-Motion (SfM) algorithms. Each scene includes pre-calibrated multi-view image sequences. These scenes vary in complexity and texture, encompassing both indoor and outdoor environments, to provide a comprehensive benchmark for assessing the accuracy and robustness of SfM pipelines. A K file that contains the matrix is included with the dataset.
 
 ---
-
-## Theory
-
-### Camera Calibration
-Camera calibration estimates the intrinsic matrix \( K \) to model the camera's internal parameters. For custom datasets, calibration is performed using 8–10 checkerboard images with OpenCV's `cv2.calibrateCamera` and `cv2.findChessboardCorners`. The intrinsic matrix is scaled by a downscaling factor (2.0) to account for image resizing. Note that lens distortion correction is not applied in this implementation for simplicity, assuming minimal distortion in custom datasets.
-
-### Feature Detection & Matching
-Features are detected using SIFT and matched via brute-force matching with Lowe's ratio test (threshold 0.7). The fundamental matrix \( F \) is estimated using RANSAC to reject outliers, and the essential matrix \( E \) is computed as:
-$$
-E = K^T F K
-$$ .
-The essential matrix encodes the relative rotation and translation between two cameras.
-
-### Initial Reconstruction
-The initial reconstruction selects an image pair with sufficient parallax. The essential matrix is decomposed into rotation \( R \) and translation \( t \) using `cv2.decomposeEssentialMat`, and the correct pose is chosen via cheirality checks (positive depth). 3D points are triangulated using `cv2.triangulatePoints`:
-$$
-x_i = P_i X, \quad x_j = P_j X
-$$
-where \( P_i = K [R_i | t_i] \) are projection matrices.
-
-### Incremental Camera Registration (PnP)
-Each new image is registered via Perspective-n-Point (PnP) solving using `cv2.solvePnPRansac` with the iterative method:
-$$
-\min_{R,t} \sum_i \| x_i - \pi(K(RX_i + t)) \|^2
-$$
-
-### Triangulation & Bundle Adjustment
-New points are triangulated between registered views using `cv2.triangulatePoints`. Bundle adjustment, which is optional and controlled via the GUI, minimizes reprojection errors using `scipy.optimize.least_squares`:
-$$
-\min_{\{R_i, t_i, X_j, K\}} \sum_{i,j} \| x_{ij} - \pi(K(R_i X_j + t_i)) \|^2
-$$
-In this implementation, the intrinsic matrix \( K \) is optionally optimized, which may improve results for custom datasets but could introduce inconsistencies for pre-calibrated datasets.
-
-### Colorization
-3D points are colored by sampling BGR pixel values from the corresponding 2D image points in the current image (app_controller.py). Colors are converted to RGB for Open3D visualization but may appear incorrect due to potential BGR channel mismatches.
-
----
-
 ## Methodology
 
-The *Structure from Motion (SfM)* pipeline implemented in this study reconstructs a 3D scene from a set of unordered images. The methodology consists of the following key stages:
+### Camera Calibration  
+Camera calibration was performed using 8–10 checkerboard images processed with OpenCV to estimate the intrinsic matrix \(K\). Sub-pixel corner refinement was applied to improve accuracy. Since the images were downscaled by a factor of 2.0, the intrinsic matrix \(K\) was adjusted accordingly. Lens distortion parameters were computed but not applied, assuming minimal distortion based on prior assessment.
 
-### 1. Initialization and Camera Calibration
+### Selecting Initial Image Pair  
+To initialize the 3D reconstruction, a stereo pair with sufficient **parallax** is selected to ensure reliable depth estimation. Consecutive image pairs are evaluated by performing **SIFT feature matching**. For each feature in the first image, the two nearest neighbors (**k = 2**) are retrieved using **Brute-Force matching**. **Lowe’s ratio test** with a threshold of **0.7** filters out ambiguous matches, retaining only high-confidence correspondences.
 
-Choose between pre-calibrated or custom dataset. If custom, intrinsic matrix \( K \) is estimated using checkerboard images by detecting corners findChessboardCorners and then calibrating. Case of pre-calibrated, the key is given.
-In order to reduce resources consumption and computation time, images are being down scaled by 2.0 factor
+The **mean parallax** — calculated as the average Euclidean distance between matched keypoints — is computed for each pair. The first pair exceeding a threshold of **40 pixels** is selected. This threshold was empirically determined to balance baseline width for accurate triangulation against potential matching errors.
 
-### 2. Initial Image Pair Selection and Feature Matching
+Once a valid pair is identified:
 
-Select an image pair with sufficient parallax (>40 pixels average keypoint displacement) using `select_image_pair` (`triangulation.py`). This ensures robust triangulation by maximizing baseline, improving depth estimation accuracy.
-Detect and match SIFT features (`matching.py`), compute \( F \), and derive \( E \). The parallax threshold balances computational efficiency and reconstruction quality, as pairs with low parallax yield noisy 3D points.
-The *Fundamental Matrix* is estimated using RANSAC to eliminate outliers, and the *Essential Matrix* is computed and decomposed to recover the relative rotation and translation between the first two views.
+- The **Fundamental Matrix** is estimated via **RANSAC**.  
+- The **Essential Matrix** is computed as  
+  \[
+  E = K^T F K
+  \]  
+  where \(K\) is the intrinsic camera matrix.  
+- Only **inlier matches** identified by RANSAC are retained for further processing.
 
-### 3. Initial Triangulation
+This approach ensures the initial pair is geometrically suitable for robust pose estimation and 3D triangulation.
 
-With the camera intrinsics and relative pose, 3D points are triangulated from the matched 2D keypoints.  
-These 3D points are then evaluated using *re-projection error* to ensure geometric consistency.
+### Initial Pose Estimation and Triangulation  
+Given the matched feature points and essential matrix \(E\), the following steps are executed:
 
-### 4. Pose Estimation using PnP
+1. **Normalization of matched points:**  
+   Feature points from both images are reshaped appropriately for triangulation.
 
-The *Perspective-n-Point (PnP)* algorithm is applied to estimate the pose of the second camera using the initial 3D points and corresponding 2D features.  
-This serves as a base for subsequent incremental camera pose estimation.
+2. **Decomposition of Essential Matrix:**  
+   \(E\) is decomposed into four pose candidates:  
+   \[
+   (R_1, t), (R_1, -t), (R_2, t), (R_2, -t)
+   \]
 
-### 5. Incremental Camera Registration
+3. **Pose selection via triangulation:**  
+   Each candidate pose is evaluated by triangulating 3D points and counting those with positive depth (in front of both cameras). The pose yielding the maximum valid points is selected.
 
-The remaining images are processed iteratively. For each new image:
+4. **Camera pose matrix construction:**  
+   The chosen rotation \(R\) and translation \(t\) are combined into a \(3 \times 4\) transformation matrix for the second camera. The first camera pose is fixed as the identity matrix at the origin.
 
-- Keypoints are matched with the previous image  
-- Common feature points are identified using cross-matching  
-- The camera pose is estimated using PnP  
-- 3D points are triangulated with the newly estimated pose  
-- Reprojection error is computed to validate the new points  
+5. **3D point triangulation:**  
+   Using the selected poses and matched points, 3D points are triangulated.
 
-### 6. Bundle Adjustment 
+6. **Reprojection error computation:**  
+   The reprojection error is calculated to assess reconstruction accuracy.
 
-If enabled, *bundle adjustment* is performed after each new pose registration.  
-It refines both camera poses and 3D point positions by minimizing the re-projection error using least_squares.  
-This optimization is crucial for improving the accuracy and consistency of the reconstructed structure.
+This procedure provides a robust and geometrically consistent initial stereo camera pose essential for accurate 3D reconstruction.
 
-### 7. Color Accumulation and Visualization Preparation
+## Incremental Camera Expansion  
+Following initial pose estimation, additional cameras are added incrementally as follows:
 
-For each valid 3D point, color is extracted from the image to facilitate visualization.  
-The camera extrinsic matrices are stored in a format compatible with *Open3D* for later rendering.  
-The error at each step is logged for analysis.
+1. **Pose estimation via PnP:**  
+   The Perspective-n-Point (PnP) algorithm with RANSAC estimates each new camera’s pose relative to the existing 3D points and 2D feature correspondences.
 
-### 8. Result Visualization
+2. **Bundle adjustment:**  
+   Bundle adjustment jointly optimizes camera poses, 3D points, and optionally the intrinsic matrix \(K\) to minimize reprojection error.  
+   - Camera poses are represented as (3 * 4) matrices.  
+   - The intrinsic matrix \(K\) can be fixed or optimized depending on a calibration flag.  
+   - The reprojection error is defined as the squared difference between observed and projected 2D points.  
+   - Optimization is performed using `scipy.optimize.least_squares` with a Huber loss function for robustness and the TRF method.  
+   - Alternative optimization methods were not evaluated.
 
-Once all images have been processed:
-- The reconstruction results (3D points, colors, camera poses, and re-projection errors) are visualized and analyzed and saved in .ply format.
+3. **Iterative processing of remaining images:**  
+   For each subsequent image:  
+   - The image is downscaled for efficient processing.  
+   - Features are matched between the previous and current images.  
+   - If applicable, points are triangulated between previous poses to update the 3D point cloud.  
+   - Common matched points are identified.  
+   - The new camera pose is estimated via PnP using 3D-2D correspondences.  
+   - New points are triangulated and reprojection errors computed.  
+   - The new pose and 3D points are stored for visualization and further processing.  
+   - Bundle adjustment refines camera poses and 3D points to reduce reprojection errors.  
+   - The 3D point cloud is accumulated for visualization.
+
+## Bundle Adjustment  
+Bundle adjustment refines camera poses and 3D point estimates by jointly minimizing reprojection errors. When enabled, the intrinsic matrix, camera poses, and 3D points are updated. Reprojection error is computed post-adjustment to quantify improvement.
+
+## Colorization  
+3D points are colorized using pixel colors extracted from the images. Because OpenCV loads images in **BGR format**, colors are converted to **RGB** before visualization to ensure correct appearance. For points visible in multiple views, colors are averaged to improve photometric consistency and reduce noise. Photometric consistency checks validate and refine color assignments, ensuring that colors accurately represent the scene.
+
+## Visualization  
+- Camera trajectories are visualized as coordinate frames connected by red lines indicating camera centers.  
+- Camera poses are stored as \(4 \times 4\) transformation matrices compatible with Open3D for 3D visualization.  
+- Sparse 3D point clouds are visualized and saved with color information derived from images.  
+- Real-time display of current images during incremental processing is provided using OpenCV (`cv2.imshow`) to monitor feature tracking and pose estimation.  
+- Point cloud colors undergo BGR-to-RGB conversion to correct OpenCV’s default image format.  
+- Outliers are filtered from the point cloud prior to visualization and saving to improve quality.
+
+## Results  
+- Reprojection errors over time are plotted to indicate accuracy and stability of pose estimation.  
+- The final 3D reconstruction combines camera poses and colorized point clouds to provide a comprehensive spatial overview.  
+- Color averaging across multiple views and refinement during bundle adjustment enhance photometric consistency.  
+- Visualized results demonstrate the effectiveness of incremental pose estimation, triangulation, and bundle adjustment.
+
+
+
+---
 
 ### Pipeline Pseudocode
 
@@ -375,13 +383,6 @@ Final Bundle Error (min): ~0.002
 - Display reprojection error plots using Matplotlib.
 - Visualize feature matchings.
 - Visualize corner detections for camera calibration.
-
-### Files
-- 📂 `main.py`, `app_controller.py`, `app_view.py`, `plot.py`, `calibration.py`, `matching.py`, `optimization.py`, `triangulation.py`, `common_points.py`, `io_utils.py`, `config.py`
-- 📁 `Results/`: Contains `.ply` files and visualization images in `OurData/` and `PrecalibratedData/`.
-- 📁 `Dataset/`: Contains `Calibrated/` and `Images/` directories that contains datasets and checkerboard images.
-
----
 
 ## Resources
 - Liu, S., Gao, Y., Zhang, T., Pautrat, R., Schönberger, J. L., Larsson, V., & Pollefeys, M. (2024). Robust Incremental Structure-from-Motion with Hybrid Features. arXiv preprint arXiv:2409.16719. Submitted on September 29, 2024.

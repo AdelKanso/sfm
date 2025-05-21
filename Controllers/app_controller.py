@@ -59,9 +59,9 @@ def start_sfm_process(ba_var,data_var,matches_var,corner_var):
     print(f"\nFundamental Matrix with RANSAC:\n{E}")
     #Fixes after Zaar code review
     # Normalize matched points
-    first_norm = cv2.undistortPoints(np.expand_dims(first_feature, axis=1), K, dist_coeff)
-    second_norm = cv2.undistortPoints(np.expand_dims(second_feature, axis=1), K, dist_coeff)
-
+    first_norm = np.expand_dims(first_feature, axis=1)
+    second_norm = np.expand_dims(second_feature, axis=1)
+    
     # Decompose E into possible rotations and translations
     R1, R2, t = cv2.decomposeEssentialMat(E)
     poses = [(R1, t), (R1, -t), (R2, t), (R2, -t)]
