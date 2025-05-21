@@ -19,6 +19,24 @@ Structure from Motion (SfM) is a core technique in computer vision for reconstru
 The project is implemented in Python using OpenCV, SciPy, and Open3D.
 
 ---
+## Project Structure
+
+The codebase is organized into modular Python files, each handling a specific part of the SfM pipeline:
+
+| File                | Description                                                                 |
+|---------------------|-----------------------------------------------------------------------------|
+| `app_controller.py` | Main controller for the SfM pipeline, orchestrating all steps.               |
+| `app_view.py`       | Tkinter GUI for user interaction and configuration.                          |
+| `calibration.py`    | Camera calibration using checkerboard images.                                |
+| `matching.py`       | SIFT feature detection and matching with essential matrix computation.       |
+| `optimization.py`   | Bundle adjustment for optimizing camera poses and 3D points.                 |
+| `triangulation.py`  | Triangulation, PnP pose estimation, and reprojection error computation.      |
+| `common_points.py`  | Finds common keypoints across images for pose estimation and triangulation.  |
+| `io_utils.py`       | Utility functions for loading and downscaling images and intrinsic matrices. |
+| `plot.py`           | Visualization of point clouds, camera trajectories, and reprojection errors. |
+| `config.py`         | Configuration settings (e.g., paths, downscaling factor).                    |
+
+---
 
 ## About Precalibrated Dataset
 The dataset comprises several scenes designed to evaluate the performance of Structure-from-Motion (SfM) algorithms. Each scene includes pre-calibrated multi-view image sequences. These scenes vary in complexity and texture, encompassing both indoor and outdoor environments, to provide a comprehensive benchmark for assessing the accuracy and robustness of SfM pipelines. A K file that contains the matrix is included with the dataset.
@@ -34,13 +52,15 @@ Camera calibration estimates the intrinsic matrix \( K \) to model the camera's 
 Features are detected using SIFT and matched via brute-force matching with Lowe's ratio test (threshold 0.7). The fundamental matrix \( F \) is estimated using RANSAC to reject outliers, and the essential matrix \( E \) is computed as:
 $$
 E = K^T F K
-$$
+$$ .
+The essential matrix encodes the relative rotation and translation between two cameras.
 
 ### Initial Reconstruction
-Two views are used to recover relative rotation and translation from \( E \) using `cv2.recoverPose`, which validates solutions via cheirality (ensuring positive depth). Triangulation is performed using:
+The initial reconstruction selects an image pair with sufficient parallax. The essential matrix is decomposed into rotation \( R \) and translation \( t \) using `cv2.decomposeEssentialMat`, and the correct pose is chosen via cheirality checks (positive depth). 3D points are triangulated using `cv2.triangulatePoints`:
 $$
 x_i = P_i X, \quad x_j = P_j X
 $$
+where \( P_i = K [R_i | t_i] \) are projection matrices.
 
 ### Incremental Camera Registration (PnP)
 Each new image is registered via Perspective-n-Point (PnP) solving using `cv2.solvePnPRansac` with the iterative method:
@@ -53,10 +73,10 @@ New points are triangulated between registered views using `cv2.triangulatePoint
 $$
 \min_{\{R_i, t_i, X_j, K\}} \sum_{i,j} \| x_{ij} - \pi(K(R_i X_j + t_i)) \|^2
 $$
-In this implementation, the intrinsic matrix \( K \) is included in the optimization, allowing slight adjustments to focal length and principal point. This may improve accuracy for custom datasets with noisy calibration but could introduce inconsistencies for pre-calibrated datasets where \( K \) is assumed fixed. Future improvements could include an option to fix \( K \) for pre-calibrated datasets.
+In this implementation, the intrinsic matrix \( K \) is optionally optimized, which may improve results for custom datasets but could introduce inconsistencies for pre-calibrated datasets.
 
 ### Colorization
-3D points are colored by sampling RGB values from the 2D image points in the current image that correspond to the triangulated 3D points. These 2D points, obtained during triangulation, are used directly to sample pixel values from the current image, avoiding the need to re-project 3D points with `cv2.projectPoints`. Colors are sampled in BGR format (as loaded by OpenCV) and normalized for visualization in Open3D, though BGR-to-RGB conversion is not explicitly performed, which may affect color accuracy in visualizations. Colors are not averaged across multiple views, simplifying the process but potentially leading to inconsistencies under varying lighting conditions.
+3D points are colored by sampling BGR pixel values from the corresponding 2D image points in the current image (app_controller.py). Colors are converted to RGB for Open3D visualization but may appear incorrect due to potential BGR channel mismatches.
 
 ---
 
@@ -71,8 +91,8 @@ In order to reduce resources consumption and computation time, images are being 
 
 ### 2. Initial Image Pair Selection and Feature Matching
 
-Two images are selected to initiate the reconstruction. These images are downscaled to reduce computational load.  
-SIFT is used to detect and match keypoints between the two images, Brut Force Matcher to match descriptors, 
+Select an image pair with sufficient parallax (>40 pixels average keypoint displacement) using `select_image_pair` (`triangulation.py`). This ensures robust triangulation by maximizing baseline, improving depth estimation accuracy.
+Detect and match SIFT features (`matching.py`), compute \( F \), and derive \( E \). The parallax threshold balances computational efficiency and reconstruction quality, as pairs with low parallax yield noisy 3D points.
 The *Fundamental Matrix* is estimated using RANSAC to eliminate outliers, and the *Essential Matrix* is computed and decomposed to recover the relative rotation and translation between the first two views.
 
 ### 3. Initial Triangulation
@@ -111,6 +131,52 @@ The error at each step is logged for analysis.
 
 Once all images have been processed:
 - The reconstruction results (3D points, colors, camera poses, and re-projection errors) are visualized and analyzed and saved in .ply format.
+
+### Pipeline Pseudocode
+
+#### Incremental Expansion
+```plaintext
+Initialize K, image_list
+Set first_pose = K * [I | 0]
+Select image_pair (img1, img2) with parallax > 40 pixels
+Compute E from matched SIFT features
+Decompose E to get R, t
+Triangulate initial 3D points
+For each remaining image in image_list:
+    Match features with previous image
+    Find common points
+    Estimate pose using PnP
+    Triangulate new 3D points
+    If bundle_adjustment_enabled:
+        Perform bundle adjustment
+    Extract colors for 3D points
+    Update camera poses and point cloud
+Visualize results (point cloud, trajectory, errors)
+```
+
+#### Bundle Adjustment
+```plaintext
+Input: 3D_points, 2D_points, transform_matrix, K, dist_coeff
+If not pre_calibrated:
+    Optimize K
+Flatten variables: [transform_matrix, K (optional), 2D_points, 3D_points]
+Minimize reprojection error using least_squares with Huber loss:
+    For each 3D point:
+        Project to 2D using K, R, t
+        Compute squared error vs. observed 2D point
+Return optimized 3D_points, 2D_points, transform_matrix, K
+```
+
+### Pipeline Flowchart (Text Description)
+- **Start**: Load dataset and calibrate (or use pre-calibrated \( K \)).
+- **Initial Pair**: Select two images with sufficient parallax, compute \( E \), triangulate points.
+- **Loop**:
+  - Match features with previous image.
+  - Estimate pose via PnP.
+  - Triangulate new points.
+  - Optionally apply bundle adjustment.
+  - Accumulate colors and poses.
+- **End**: Visualize point cloud, trajectory, and errors.
 
 GUI allows interactive selection of dataset type, bundle adjustment, visualization of checkerboard corners, and feature matches.
 
@@ -262,6 +328,19 @@ Final Bundle Error (min): ~0.002
 - Point clouds capture scene structure well, though sparsity limits detail. Camera trajectories are smooth but exhibit minor drift without global loop closure, visible in trajectory visualizations.
 - **Quantitative Analysis**: Bundle adjustment computation time increases with the number of points and cameras . Match quality varies, with ~50–70% of SIFT matches retained after RANSAC, depending on scene texture and baseline.
 
+### Design Justifications
+- **No Distortion Correction**: Lens distortion correction is computed during calibration but not applied in the SfM pipeline to simplify processing, as the dataset images exhibit minimal distortion. **Trade-off**: This reduces computational complexity but may introduce errors (e.g., 0.1–0.5 pixels) in cases with significant radial distortion, particularly for wide-angle lenses.
+- **RANSAC Thresholds**: The Lowe’s ratio test threshold of 0.7 (`matching.py`) balances match quality and quantity, retaining ~50–70% of SIFT matches. The RANSAC reprojection error threshold in `cv2.findFundamentalMat` (default ~1 pixel) ensures robust outlier rejection. **Trade-off**: A stricter threshold (e.g., 0.6) improves match reliability but reduces the number of correspondences, potentially affecting triangulation density.
+- **Downscaling Factor (2.0)**: Images and \( K \) are downscaled by a factor of 2.0 (`io_utils.py`) to reduce computation time (e.g., 2–3x faster processing). **Trade-off**: This decreases feature detection resolution, leading to sparser point clouds but enables real-time processing on standard hardware.
+- **Sequential View Processing**: Images are processed in dataset order to leverage temporal continuity, simplifying feature matching (`app_controller.py`). **Trade-off**: This assumes consecutive images have sufficient overlap, which may fail for unordered datasets, where a view selection strategy based on feature overlap would be needed.
+
+### Limitations
+- **No Loop Closure**: Accumulating errors cause trajectory drift, measurable as MPD ~0.05–0.15 units.
+- **Sparse Point Clouds**: Limited feature matches reduce point cloud density (~3,000–10,000 points).
+- **Color Inconsistencies**: Single-view color sampling and potential BGR-to-RGB issues cause color mismatches.
+- **Lens Distortion**: Not applied in the SfM pipeline, assuming minimal distortion.
+- **Computational Cost**: Bundle adjustment is resource-intensive (~10–20 seconds per image).
+- **Lighting Sensitivity**: Poor lighting reduces feature matching accuracy, with ~50–70% match retention.
 
 ### Challenges
 - Bundle adjustment is computationally expensive, requiring significant memory and time .
@@ -271,9 +350,14 @@ Final Bundle Error (min): ~0.002
 - Downscaling (factor 2.0) balances speed and accuracy but reduces feature resolution. Higher resolution increases computation time significantly (e.g., 2–3x slower without downscaling).
 - Didn't find any easy to use package to implement ceres or g2o to enhance bundle adjustment
 - Poor lightening affected the accuracy of the sfm process
-- Point clouds are sparse but effectively represent the scene, with colorization enhancing interpretability despite using single-view sampling and potential BGR color display, which may cause color channel mismatches (e.g., red and blue swapped).
 - Camera trajectories are visualized clearly, showing the camera path, but minor deviations occur due to accumulated errors, measurable by comparing to ground truth (if available).
 
+### Future Work
+- Implement loop closure to correct trajectory drift using global optimization.
+- Integrate advanced optimization libraries like Ceres Solver or g2o for faster bundle adjustment.
+- Apply lens distortion correction in the SfM pipeline to improve accuracy.
+- Use multi-view color averaging to enhance color consistency.
+- Support higher-resolution images with adaptive downscaling for denser reconstructions.
 ---
 
 ## Deliverables
@@ -293,9 +377,8 @@ Final Bundle Error (min): ~0.002
 - Visualize corner detections for camera calibration.
 
 ### Files
-- 📂 `main.py`, `controller.py`,`plot.py`: Full implementation.
-- 📁 `Results/`: Contains `.ply` point cloud files.
-- 📁 `Results/`: Contains `OurData/` and `PrecalibratedData/` directories that contains visualizations.
+- 📂 `main.py`, `app_controller.py`, `app_view.py`, `plot.py`, `calibration.py`, `matching.py`, `optimization.py`, `triangulation.py`, `common_points.py`, `io_utils.py`, `config.py`
+- 📁 `Results/`: Contains `.ply` files and visualization images in `OurData/` and `PrecalibratedData/`.
 - 📁 `Dataset/`: Contains `Calibrated/` and `Images/` directories that contains datasets and checkerboard images.
 
 ---
