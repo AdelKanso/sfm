@@ -4,8 +4,8 @@ import glob
 import cv2
 import numpy as np
 
-from Plot.plot import show_image, show_plot
-from Utils.io_utils import downscale_image, downscale_k, get_images
+from Plot.plot import  show_plot
+from Utils.io_utils import  downscale_k, get_images
 from config import (
     is_down_scale_images,
     checker_board_path,
