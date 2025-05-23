@@ -4,6 +4,7 @@ import numpy as np
 
 from Plot.plot import show_image
 
+from Utils.io_utils import downscale_image
 
 def features_matching(first_img, second_img,show_matches,K) -> tuple:
     # Initialize SIFT feature detector
@@ -28,7 +29,7 @@ def features_matching(first_img, second_img,show_matches,K) -> tuple:
         matched_image = cv2.drawMatches(first_img, first_key_points, second_img, second_key_points, feature, None,
                                         flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
         show_image("Matches", matched_image)
-
+    print(f"good matches {len(feature)}")
     pts0=np.float32([first_key_points[m.queryIdx].pt for m in feature])
     pts1=np.float32([second_key_points[m.trainIdx].pt for m in feature])
     # Find Fundamental Matrix with RANSAC
@@ -39,3 +40,24 @@ def features_matching(first_img, second_img,show_matches,K) -> tuple:
     # Return coordinates of matched keypoints
     # Select only inlier founded_matches
     return pts0[mask.ravel() == 1],pts1[mask.ravel() == 1],E
+
+
+def select_image_pair(image_list, K, show_matches):
+    """ Selects an image pair with sufficient baseline using SIFT matches. """
+    min_parallax_threshold = 40  # Chosen after testing on data sets
+    
+    for i in range(len(image_list) - 1):
+        img1 = downscale_image(image_list[i])
+        img2 = downscale_image(image_list[i + 1])
+
+        # Feature matching
+        keypoints1, keypoints2, E = features_matching(img1, img2, show_matches, K)
+
+        # Compute disparity (parallax)
+        parallax = np.mean(np.linalg.norm(keypoints1 - keypoints2, axis=1))
+
+        if parallax > min_parallax_threshold:
+            print(f"Selected Image Pair: {i}, {i + 1} with parallax {parallax:.2f}")
+            return img1, img2, keypoints1, keypoints2,E
+
+    raise RuntimeError("No suitable image pair found with sufficient baseline.")

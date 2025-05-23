@@ -3,8 +3,6 @@
 import cv2
 import numpy as np
 
-from Utils.io_utils import downscale_image
-from Utils.matching import features_matching
 
 
 def triangulation(first_2d, second_2d, first_proj_matrix, second_proj_matrix) -> tuple:
@@ -34,6 +32,7 @@ def pnp_rasnac(obj_point, image_point, K, dist_coeff, rot_vector, initial) -> tu
 
 #mariam
 def reprojection_error(obj_points, image_points, transf_mat, K, homogenity,dist_coeff) -> tuple:
+    
     rot_m = transf_mat[:3, :3]
     tran_vector = transf_mat[:3, 3]
     rot_vector, _ = cv2.Rodrigues(rot_m)
@@ -49,23 +48,3 @@ def reprojection_error(obj_points, image_points, transf_mat, K, homogenity,dist_
     # Calculate the reprojection error
     total_error = cv2.norm(image_points_calc, np.float32(image_points.T) if homogenity == 1 else np.float32(image_points), cv2.NORM_L2)
     return total_error / len(image_points_calc), obj_points
-
-def select_image_pair(image_list, K, show_matches):
-    """ Selects an image pair with sufficient baseline using SIFT matches. """
-    min_parallax_threshold = 40  # Chosen after testing on data sets
-    
-    for i in range(len(image_list) - 1):
-        img1 = downscale_image(image_list[i])
-        img2 = downscale_image(image_list[i + 1])
-
-        # Feature matching
-        keypoints1, keypoints2, E = features_matching(img1, img2, show_matches, K)
-
-        # Compute disparity (parallax)
-        parallax = np.mean(np.linalg.norm(keypoints1 - keypoints2, axis=1))
-
-        if parallax > min_parallax_threshold:
-            print(f"Selected Image Pair: {i}, {i + 1} with parallax {parallax:.2f}")
-            return img1, img2, keypoints1, keypoints2,E
-
-    raise RuntimeError("No suitable image pair found with sufficient baseline.")
