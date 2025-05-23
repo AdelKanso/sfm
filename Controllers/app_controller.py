@@ -3,9 +3,9 @@ import numpy as np
 from Utils.calibration import calibrate_camera
 from Utils.common_points import com_points
 from Utils.io_utils import downscale_image, downscale_k, get_images
-from Utils.matching import features_matching
+from Utils.matching import features_matching,select_image_pair
 from Utils.optimization import bundle_adjustment
-from Utils.triangulation import pnp_rasnac, reprojection_error, select_image_pair, triangulation
+from Utils.triangulation import pnp_rasnac, reprojection_error, triangulation
 from Plot.plot import  show_results
 from config import (
     is_down_scale_images,
@@ -152,9 +152,6 @@ def start_sfm_process(ba_var,data_var,matches_var,corner_var):
         rot_matrix, tran_matrix, cm_points_2, points_3d, cm_points_cur = pnp_rasnac(points_3d[cm_points_0], cm_points_2, K,  dist_coeff if is_calibrate else np.zeros((5, 1), dtype=np.float32), cm_points_cur, initial=0)
         second_transform_mat = np.hstack((rot_matrix, tran_matrix))  # Combine rotation and translation into a single matrix
         pose_2 = np.matmul(K, second_transform_mat)  # Camera pose in world coordinates
-
-        # Calculate reprojection error for the newly estimated 3D points
-        error, points_3d = reprojection_error(points_3d, cm_points_2, second_transform_mat, K, homogenity=0,dist_coeff=dist_coeff)
 
         # Perform triangulation to estimate 3D points from the new camera pose
         cm_mask_0, cm_mask_1, points_3d = triangulation(second_pose, pose_2, cm_mask_0, cm_mask_1)
